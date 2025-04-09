@@ -1,3 +1,10 @@
+metadata/
+test_tsv1/
+train_tsv1/
+widsdatathon2025-university/
+.vscode/
+test_data.csv
+train_data.csv
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
