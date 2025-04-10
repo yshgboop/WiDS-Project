@@ -5,8 +5,8 @@ from glob import glob
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
 
 class DataProcessor:
     def __init__(self, train_folder=None, test_folder=None, train_metadata_path=None, test_metadata_path=None):
@@ -160,14 +160,12 @@ class DataProcessor:
 
 class ExploratoryDataAnalysis:
     """
-    A class to perform comprehensive exploratory data analysis on a dataset.
+    A class to perform exploratory data analysis on correlation datasets in long format.
     
-    This class provides methods for various types of analyses including:
-    - Basic statistics and data inspection
-    - Missing values analysis
-    - Distribution analysis
-    - Correlation analysis
-    - Group comparisons
+    In the long format:
+    - Each participant has multiple rows (one per correlation coefficient)
+    - Demographic information is duplicated across these rows
+    - Structure: participant_id, correlation_id, correlation_value, demographic variables
     """
     
     def __init__(self, file_path=None, dataframe=None):
@@ -194,35 +192,89 @@ class ExploratoryDataAnalysis:
         else:
             raise ValueError("Either file_path or dataframe must be provided")
         
-        # Identify column types
-        self.numerical_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
-        self.categorical_cols = self.df.select_dtypes(include=['object']).columns.tolist()
+        # Check if data is in long format (expecting columns: participant_id, correlation_id, correlation_value)
+        required_cols = ['participant_id', 'correlation_id', 'correlation_value']
+        if not all(col in self.df.columns for col in required_cols):
+            raise ValueError("Data does not appear to be in long format. Expected columns: participant_id, correlation_id, correlation_value")
         
-        # Identify special column types
-        self.factor_scores = [col for col in self.numerical_cols if col.endswith('_fs')]
-        self.id_column = 'participant_id' if 'participant_id' in self.df.columns else None
+        # Identify key columns
+        self.id_column = 'participant_id'
+        self.corr_id_column = 'correlation_id'
+        self.corr_value_column = 'correlation_value'
+        
+        # Identify column types (excluding correlation-specific columns)
+        self.demographic_cols = [col for col in self.df.columns if col not in required_cols]
+        
+        # Further categorize demographic columns
+        self.numerical_demo_cols = self.df[self.demographic_cols].select_dtypes(include=[np.number]).columns.tolist()
+        self.categorical_demo_cols = self.df[self.demographic_cols].select_dtypes(include=['object']).columns.tolist()
+        
+        # Identify factor scores (special numerical columns ending with _fs)
+        self.factor_scores = [col for col in self.numerical_demo_cols if col.endswith('_fs')]
+        
+        # Get unique participants
+        self.unique_participants = self.df[self.id_column].unique()
+        print(f"Dataset contains {len(self.unique_participants)} unique participants with {len(self.df)} total observations")
 
+    def inspect_data(self):
+        """
+        Basic inspection of the dataset structure and content.
+        """
+        print("=" * 50)
+        print("Data Overview:")
+        print("=" * 50)
+        
+        # Print basic information
+        print(f"Dataset shape: {self.df.shape}")
+        print(f"Unique participants: {len(self.unique_participants)}")
+        print(f"Average rows per participant: {len(self.df) / len(self.unique_participants):.2f}")
+        
+        # Print column information
+        print("\nColumn types:")
+        print(f"Demographic columns: {len(self.demographic_cols)}")
+        print(f"- Numerical: {len(self.numerical_demo_cols)}")
+        print(f"- Categorical: {len(self.categorical_demo_cols)}")
+        
+        # Print the first few rows
+        print("\nFirst 5 rows:")
+        print(self.df.head())
+        
+        # Print unique correlation IDs (first few)
+        unique_corr_ids = self.df[self.corr_id_column].unique()
+        print(f"\nTotal unique correlation IDs: {len(unique_corr_ids)}")
+        print(f"First 5 correlation IDs: {unique_corr_ids[:5]}")
+        
+        return self
     
     def basic_stats(self):
         """
-        Calculate and display basic descriptive statistics for numerical 
-        and categorical variables.
+        Calculate and display basic descriptive statistics.
         """
-        # Numerical statistics
         print("=" * 50)
-        print("Numerical Variables Statistics:")
+        print("Basic Statistics:")
         print("=" * 50)
-        print(self.df[self.numerical_cols].describe().T)
         
-        # Categorical statistics
-        print("\n" + "=" * 50)
-        print("Categorical Variables Value Counts:")
-        print("=" * 50)
-        for col in self.categorical_cols:
-            if col != self.id_column:  # Skip ID column
-                print(f"\n{col} Value Counts:")
-                print(self.df[col].value_counts())
-                print(f"{col} Unique Values: {self.df[col].nunique()}")
+        # Stats for correlation values
+        print("\nCorrelation Values Statistics:")
+        print(self.df[self.corr_value_column].describe())
+        
+        # Create a participant-level dataset for demographic statistics
+        # (take the first occurrence of each participant to avoid duplication)
+        participant_df = self.df.drop_duplicates(subset=[self.id_column])
+        
+        # Numerical demographics statistics
+        print("\nDemographic Variables Statistics (Participant Level):")
+        if self.numerical_demo_cols:
+            print(participant_df[self.numerical_demo_cols].describe().T)
+        else:
+            print("No numerical demographic variables found.")
+        
+        # Categorical demographics statistics
+        print("\nCategorical Variables Value Counts (Participant Level):")
+        for col in self.categorical_demo_cols:
+            print(f"\n{col} Value Counts:")
+            print(participant_df[col].value_counts())
+            print(f"{col} Unique Values: {participant_df[col].nunique()}")
         
         return self
     
@@ -234,9 +286,16 @@ class ExploratoryDataAnalysis:
         print("Missing Values Analysis:")
         print("=" * 50)
         
-        # Count missing values per column
-        missing_values = self.df.isnull().sum()
-        missing_values_percent = (self.df.isnull().sum() / len(self.df)) * 100
+        # Check for missing values in correlation data
+        corr_missing = self.df[self.corr_value_column].isnull().sum()
+        print(f"Missing correlation values: {corr_missing} ({corr_missing/len(self.df):.2%})")
+        
+        # Create a participant-level dataset for demographic missing values
+        participant_df = self.df.drop_duplicates(subset=[self.id_column])
+        
+        # Count missing values per demographic column
+        missing_values = participant_df[self.demographic_cols].isnull().sum()
+        missing_values_percent = (participant_df[self.demographic_cols].isnull().sum() / len(participant_df)) * 100
         
         # Create a dataframe with missing values information
         missing_df = pd.DataFrame({
@@ -247,124 +306,127 @@ class ExploratoryDataAnalysis:
         missing_data = missing_df[missing_df['Missing Values'] > 0]
         
         if len(missing_data) > 0:
+            print("\nMissing Values in Demographic Data (Participant Level):")
             print(missing_data)
             
-            # Plot missing values
+            # Plot missing values for demographics
             plt.figure(figsize=(12, 6))
-            sns.heatmap(self.df.isnull(), cbar=False, cmap='viridis', yticklabels=False)
-            plt.title('Missing Values Heatmap')
+            ax = sns.heatmap(participant_df[self.demographic_cols].isnull(), 
+                         cbar=False, cmap='viridis', yticklabels=False)
+            plt.title('Missing Values in Demographic Data')
             plt.tight_layout()
             plt.show()
         else:
-            print("No missing values found in the dataset.")
+            print("\nNo missing values found in demographic data.")
         
         return self
     
-    def distribution_analysis(self):
+    def correlation_distribution(self):
         """
-        Analyze and visualize the distribution of numerical variables.
+        Analyze the distribution of correlation values.
         """
         print("=" * 50)
-        print("Distribution Analysis:")
+        print("Correlation Values Distribution:")
         print("=" * 50)
         
-        # Histograms for numerical variables
-        num_plots = len(self.numerical_cols)
-        fig_rows = (num_plots + 1) // 2  # Calculate number of rows needed
-        
-        plt.figure(figsize=(15, 5 * fig_rows))
-        
-        for i, col in enumerate(self.numerical_cols, 1):
-            plt.subplot(fig_rows, 2, i)
-            sns.histplot(self.df[col].dropna(), kde=True)
-            plt.title(f'Distribution of {col}')
-            plt.tight_layout()
-        
+        # Overall distribution of correlation values
+        plt.figure(figsize=(12, 6))
+        sns.histplot(self.df[self.corr_value_column].dropna(), kde=True)
+        plt.title('Distribution of All Correlation Values')
+        plt.xlabel('Correlation Value')
+        plt.ylabel('Frequency')
+        plt.tight_layout()
         plt.show()
         
-        # Boxplots for factor scores
-        if self.factor_scores:
-            plt.figure(figsize=(15, 10))
-            
-            # Melt the dataframe to get it in the right format for seaborn
-            melted_df = self.df[self.factor_scores].melt()
-            
-            # Create the boxplot
-            sns.boxplot(x='variable', y='value', data=melted_df)
-            plt.title('Boxplots of Factor Scores')
-            plt.xlabel('Factor Score')
-            plt.ylabel('Value')
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            plt.show()
-            
-            # QQ plots for normality check
-            fig, axes = plt.subplots(2, 2, figsize=(15, 15))
-            axes = axes.flatten()
-            
-            for i, col in enumerate(self.factor_scores):
-                if i < len(axes):  # Ensure we don't try to access non-existent axes
-                    stats.probplot(self.df[col].dropna(), plot=axes[i])
-                    axes[i].set_title(f'Q-Q Plot of {col}')
-            
-            plt.tight_layout()
-            plt.show()
+        # Distribution statistics
+        print("\nDistribution Statistics for Correlation Values:")
+        print(self.df[self.corr_value_column].describe())
+        
+        # Check for extreme values
+        q1 = self.df[self.corr_value_column].quantile(0.25)
+        q3 = self.df[self.corr_value_column].quantile(0.75)
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        outliers = self.df[(self.df[self.corr_value_column] < lower_bound) | 
+                           (self.df[self.corr_value_column] > upper_bound)]
+        
+        print(f"\nPotential outliers: {len(outliers)} values outside of range [{lower_bound:.3f}, {upper_bound:.3f}]")
+        
+        # Create a boxplot
+        plt.figure(figsize=(10, 6))
+        sns.boxplot(y=self.corr_value_column, data=self.df)
+        plt.title('Boxplot of Correlation Values')
+        plt.tight_layout()
+        plt.show()
         
         return self
     
-    def categorical_visualization(self):
+    def participant_level_analysis(self):
         """
-        Visualize categorical variables using bar charts.
+        Analyze correlation patterns at the participant level.
         """
         print("=" * 50)
-        print("Categorical Variables Visualization:")
+        print("Participant-Level Analysis:")
         print("=" * 50)
         
-        # Select categorical columns with a reasonable number of unique values
-        selected_cats = []
-        for col in self.categorical_cols:
-            if col != self.id_column and self.df[col].nunique() < 15:  # Skip ID and columns with too many categories
-                selected_cats.append(col)
+        # Calculate statistics for each participant
+        participant_stats = self.df.groupby(self.id_column)[self.corr_value_column].agg(['mean', 'std', 'min', 'max', 'count'])
         
-        if selected_cats:
-            for col in selected_cats:
-                plt.figure(figsize=(12, 6))
-                
-                # Sort value counts for better visualization
-                value_counts = self.df[col].value_counts().sort_values(ascending=False)
-                
-                # Create the bar chart
-                ax = sns.barplot(x=value_counts.index, y=value_counts.values)
-                
-                # Add value labels on top of bars
-                for i, v in enumerate(value_counts.values):
-                    ax.text(i, v + 0.1, str(v), ha='center')
-                
-                plt.title(f'Counts of {col}')
-                plt.ylabel('Count')
-                plt.xlabel(col)
-                plt.xticks(rotation=45, ha='right')
-                plt.tight_layout()
-                plt.show()
+        # Visualize distribution of participant means
+        plt.figure(figsize=(12, 6))
+        sns.histplot(participant_stats['mean'], kde=True)
+        plt.title('Distribution of Mean Correlation Values Across Participants')
+        plt.xlabel('Mean Correlation Value')
+        plt.ylabel('Frequency')
+        plt.tight_layout()
+        plt.show()
+        
+        # Visualize distribution of participant standard deviations
+        plt.figure(figsize=(12, 6))
+        sns.histplot(participant_stats['std'], kde=True)
+        plt.title('Distribution of Standard Deviations in Correlation Values Across Participants')
+        plt.xlabel('Standard Deviation of Correlation Values')
+        plt.ylabel('Frequency')
+        plt.tight_layout()
+        plt.show()
         
         return self
     
-    def correlation_analysis(self):
+    
+    def demographic_correlation_heatmap(self, demo_vars=None):
         """
-        Analyze correlations between numerical variables.
+        Create a heatmap showing how demographic variables correlate with each other.
+        
+        Parameters:
+        -----------
+        demo_vars : list, optional
+            List of demographic variables to include in the heatmap
         """
+        # Create a participant-level dataset
+        participant_df = self.df.drop_duplicates(subset=[self.id_column])
+        
+        # Select variables for correlation
+        if demo_vars is None:
+            # Use all numerical demographic variables
+            demo_vars = self.numerical_demo_cols
+        else:
+            # Filter to ensure all variables exist and are numerical
+            demo_vars = [var for var in demo_vars if var in self.numerical_demo_cols]
+        
+        if len(demo_vars) < 2:
+            print("Not enough numerical demographic variables for correlation analysis.")
+            return self
+        
         print("=" * 50)
-        print("Correlation Analysis:")
+        print("Demographic Variables Correlation Heatmap:")
         print("=" * 50)
         
-        # Calculate the correlation matrix
-        corr_matrix = self.df[self.numerical_cols].corr()
+        # Calculate correlation matrix
+        corr_matrix = participant_df[demo_vars].corr()
         
-        # Print the correlation matrix
-        print("Correlation Matrix:")
-        print(corr_matrix)
-        
-        # Visualize the correlation matrix
+        # Create heatmap
         plt.figure(figsize=(12, 10))
         mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
         cmap = sns.diverging_palette(230, 20, as_cmap=True)
@@ -382,374 +444,75 @@ class ExploratoryDataAnalysis:
             fmt=".2f"
         )
         
-        plt.title('Correlation Matrix Heatmap')
-        plt.tight_layout()
-        plt.show()
-        
-        # Scatter plots for factor scores
-        if len(self.factor_scores) >= 2:
-            print("\nScatter Plots for Factor Scores:")
-            
-            # Create a pairplot for factor scores
-            sns.pairplot(self.df[self.factor_scores], diag_kind='kde')
-            plt.suptitle('Pairwise Relationships Between Factor Scores', y=1.02)
-            plt.tight_layout()
-            plt.show()
-        
-        return self
-    
-    def group_comparisons(self):
-        """
-        Compare numerical variables across different categorical groups.
-        """
-        print("=" * 50)
-        print("Group Comparisons:")
-        print("=" * 50)
-        
-        # Select categorical variables for grouping (exclude participant_id)
-        grouping_vars = [col for col in self.categorical_cols 
-                        if col != self.id_column and self.df[col].nunique() < 10]
-        
-        if not self.factor_scores or not grouping_vars:
-            print("Not enough variables for group comparisons.")
-            return self
-        
-        # For each factor score, compare across different categorical groups
-        for factor in self.factor_scores:
-            for group in grouping_vars:
-                # Skip if too many missing values
-                if self.df[group].isnull().sum() > 0.5 * len(self.df):
-                    continue
-                    
-                plt.figure(figsize=(12, 6))
-                
-                # Create violin plot with boxplot inside
-                ax = sns.violinplot(x=group, y=factor, data=self.df, inner="box", palette="viridis")
-                
-                plt.title(f'{factor} by {group}')
-                plt.xlabel(group)
-                plt.ylabel(factor)
-                plt.xticks(rotation=45, ha='right')
-                plt.tight_layout()
-                plt.show()
-                
-                # Perform ANOVA if there are more than 2 groups, t-test otherwise
-                groups = self.df.groupby(group)[factor].apply(list)
-                valid_groups = {k: v for k, v in groups.items() if len(v) > 5}  # Require at least 5 samples
-                
-                if len(valid_groups) >= 2:
-                    print(f"\nStatistical test for {factor} across {group} groups:")
-                    
-                    if len(valid_groups) == 2:
-                        # Perform t-test for 2 groups
-                        keys = list(valid_groups.keys())
-                        t_stat, p_val = stats.ttest_ind(
-                            valid_groups[keys[0]], 
-                            valid_groups[keys[1]], 
-                            equal_var=False  # Welch's t-test (doesn't assume equal variance)
-                        )
-                        print(f"Independent t-test (Welch's): t-statistic = {t_stat:.4f}, p-value = {p_val:.4f}")
-                        
-                    else:
-                        # Perform ANOVA for more than 2 groups
-                        f_stat, p_val = stats.f_oneway(*valid_groups.values())
-                        print(f"One-way ANOVA: F-statistic = {f_stat:.4f}, p-value = {p_val:.4f}")
-                    
-                    if p_val < 0.05:
-                        print(f"The difference in {factor} between {group} groups is statistically significant (p < 0.05).")
-                    else:
-                        print(f"The difference in {factor} between {group} groups is not statistically significant (p >= 0.05).")
-        
-        return self
-    
-    def bmi_analysis(self):
-        """
-        Analyze the relationship between BMI and factor scores.
-        """
-        if 'bmi' not in self.df.columns or not self.factor_scores:
-            return self
-        
-        print("=" * 50)
-        print("BMI and Factor Scores Analysis:")
-        print("=" * 50)
-        
-        # Scatter plots for BMI vs. each factor score
-        for factor in self.factor_scores:
-            plt.figure(figsize=(10, 6))
-            
-            # Create scatter plot with regression line
-            sns.regplot(x='bmi', y=factor, data=self.df, scatter_kws={'alpha':0.5}, line_kws={'color':'red'})
-            
-            # Calculate correlation
-            corr, p_val = stats.pearsonr(self.df['bmi'].dropna(), self.df[factor].dropna())
-            
-            plt.title(f'BMI vs {factor} (Correlation: {corr:.4f}, p-value: {p_val:.4f})')
-            plt.xlabel('BMI')
-            plt.ylabel(factor)
-            plt.tight_layout()
-            plt.show()
-        
-        return self
-    
-    def perform_pca(self):
-        """
-        Perform PCA on factor scores to identify patterns.
-        """
-        # Select factor scores for PCA
-        if len(self.factor_scores) < 2:
-            print("Not enough factor scores for PCA.")
-            return self
-        
-        print("=" * 50)
-        print("Principal Component Analysis (PCA):")
-        print("=" * 50)
-        
-        # Extract factor scores and handle missing values
-        X = self.df[self.factor_scores].dropna()
-        
-        if len(X) < 10:
-            print("Too many missing values for PCA.")
-            return self
-        
-        # Standardize the data
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        # Perform PCA
-        pca = PCA()
-        X_pca = pca.fit_transform(X_scaled)
-        
-        # Print explained variance ratio
-        explained_variance = pca.explained_variance_ratio_
-        
-        print("Explained Variance Ratio:")
-        for i, var in enumerate(explained_variance):
-            print(f"Component {i+1}: {var:.4f} ({var*100:.2f}%)")
-        
-        print(f"Total variance explained by 2 components: {sum(explained_variance[:2])*100:.2f}%")
-        
-        # Plot explained variance
-        plt.figure(figsize=(10, 6))
-        plt.bar(range(1, len(explained_variance) + 1), explained_variance, alpha=0.7)
-        plt.step(range(1, len(explained_variance) + 1), np.cumsum(explained_variance), where='mid', color='red')
-        plt.ylabel('Explained Variance Ratio')
-        plt.xlabel('Principal Components')
-        plt.title('Explained Variance by Components')
-        plt.tight_layout()
-        plt.show()
-        
-        # Plot PCA results (first two components)
-        plt.figure(figsize=(12, 10))
-        plt.scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.7)
-        
-        # Add feature vectors
-        for i, factor in enumerate(self.factor_scores):
-            plt.arrow(0, 0, pca.components_[0, i]*5, pca.components_[1, i]*5, 
-                     color='red', alpha=0.7, head_width=0.1)
-            plt.text(pca.components_[0, i]*5.2, pca.components_[1, i]*5.2, factor)
-        
-        plt.xlabel(f'PC1 ({explained_variance[0]:.2%})')
-        plt.ylabel(f'PC2 ({explained_variance[1]:.2%})')
-        plt.title('PCA of Factor Scores')
-        plt.grid(True)
+        plt.title('Correlation Matrix of Demographic Variables')
         plt.tight_layout()
         plt.show()
         
         return self
     
-    def parent_education_analysis(self):
+    def factor_scores_analysis(self):
         """
-        Analyze how parent education levels relate to factor scores.
+        Analyze how factor scores relate to correlation patterns.
         """
-        if 'parent_1_education' not in self.df.columns or 'parent_2_education' not in self.df.columns:
-            return self
-        
         if not self.factor_scores:
+            print("No factor scores found in the dataset.")
             return self
         
         print("=" * 50)
-        print("Parent Education and Factor Scores Analysis:")
+        print("Factor Scores and Correlation Analysis:")
         print("=" * 50)
         
-        # Create education level categories if they're not already categorical
-        for parent in ['parent_1_education', 'parent_2_education']:
-            if self.df[parent].dtype == 'object' and self.df[parent].nunique() < 10:
-                # For each factor score, create a boxplot grouped by parent education
-                for factor in self.factor_scores:
-                    plt.figure(figsize=(14, 8))
-                    
-                    sns.boxplot(x=parent, y=factor, data=self.df)
-                    
-                    plt.title(f'{factor} by {parent}')
-                    plt.xlabel(parent)
-                    plt.ylabel(factor)
-                    plt.xticks(rotation=45, ha='right')
-                    plt.tight_layout()
-                    plt.show()
-                    
-                    # Calculate average factor score by education level
-                    avg_by_edu = self.df.groupby(parent)[factor].mean().sort_values()
-                    
-                    print(f"\nAverage {factor} by {parent}:")
-                    print(avg_by_edu)
-        
-        # Analyze highest education level between both parents
-        self.df['highest_parent_edu'] = self.df.apply(
-            lambda row: max(str(row['parent_1_education']), str(row['parent_2_education'])) 
-            if pd.notna(row['parent_1_education']) and pd.notna(row['parent_2_education']) 
-            else row['parent_1_education'] if pd.notna(row['parent_1_education']) 
-            else row['parent_2_education'],
-            axis=1
-        )
-        
-        if self.df['highest_parent_edu'].nunique() < 10:
-            for factor in self.factor_scores:
-                plt.figure(figsize=(14, 8))
-                
-                sns.boxplot(x='highest_parent_edu', y=factor, data=self.df)
-                
-                plt.title(f'{factor} by Highest Parent Education')
-                plt.xlabel('Highest Parent Education')
-                plt.ylabel(factor)
-                plt.xticks(rotation=45, ha='right')
-                plt.tight_layout()
-                plt.show()
-        
-        return self
-    
-    def age_analysis(self):
-        """
-        Analyze the relationship between age and factor scores.
-        """
-        if 'age' not in self.df.columns or not self.factor_scores:
-            return self
-        
-        print("=" * 50)
-        print("Age and Factor Scores Analysis:")
-        print("=" * 50)
-        
-        # Scatter plots for age vs. each factor score
+        # Analyze each factor score
         for factor in self.factor_scores:
+            print(f"\nAnalysis for {factor}:")
+            
+            # Calculate mean correlation value for each participant
+            participant_means = self.df.groupby(self.id_column)[self.corr_value_column].mean().reset_index()
+            
+            # Get factor scores (from the first occurrence of each participant)
+            factor_data = self.df.drop_duplicates(subset=[self.id_column])[[self.id_column, factor]]
+            
+            # Merge data
+            merged_data = pd.merge(participant_means, factor_data, on=self.id_column)
+            
+            # Calculate correlation between factor score and mean correlation value
+            corr, p_val = stats.pearsonr(merged_data[factor], merged_data[self.corr_value_column])
+            
+            print(f"Correlation between {factor} and mean correlation value: {corr:.4f}, p-value: {p_val:.4f}")
+            
+            # Create scatter plot
             plt.figure(figsize=(10, 6))
-            
-            # Create scatter plot with regression line
-            sns.regplot(x='age', y=factor, data=self.df, scatter_kws={'alpha':0.5}, line_kws={'color':'red'})
-            
-            # Calculate correlation
-            corr, p_val = stats.pearsonr(self.df['age'].dropna(), self.df[factor].dropna())
-            
-            plt.title(f'Age vs {factor} (Correlation: {corr:.4f}, p-value: {p_val:.4f})')
-            plt.xlabel('Age')
-            plt.ylabel(factor)
-            plt.tight_layout()
-            plt.show()
-        
-        return self
-    
-    def study_site_analysis(self):
-        """
-        Analyze differences between study sites.
-        """
-        if 'study_site' not in self.df.columns:
-            return self
-        
-        print("=" * 50)
-        print("Study Site Analysis:")
-        print("=" * 50)
-        
-        # Count participants per site
-        site_counts = self.df['study_site'].value_counts()
-        
-        plt.figure(figsize=(12, 6))
-        site_counts.plot(kind='bar')
-        plt.title('Number of Participants per Study Site')
-        plt.xlabel('Study Site')
-        plt.ylabel('Count')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.show()
-        
-        # Compare numerical variables across sites
-        for col in self.numerical_cols:
-            if col not in self.factor_scores and col != 'participant_id':
-                plt.figure(figsize=(12, 6))
-                sns.boxplot(x='study_site', y=col, data=self.df)
-                plt.title(f'{col} by Study Site')
-                plt.xlabel('Study Site')
-                plt.ylabel(col)
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                plt.show()
-        
-        # Compare factor scores across sites
-        for factor in self.factor_scores:
-            plt.figure(figsize=(12, 6))
-            sns.boxplot(x='study_site', y=factor, data=self.df)
-            plt.title(f'{factor} by Study Site')
-            plt.xlabel('Study Site')
-            plt.ylabel(factor)
-            plt.xticks(rotation=45)
+            sns.regplot(x=factor, y=self.corr_value_column, data=merged_data, scatter_kws={'alpha':0.5})
+            plt.title(f'{factor} vs Mean Correlation Value (r = {corr:.4f}, p = {p_val:.4f})')
+            plt.xlabel(factor)
+            plt.ylabel('Mean Correlation Value')
             plt.tight_layout()
             plt.show()
             
-            # ANOVA for factor scores across sites
-            groups = self.df.groupby('study_site')[factor].apply(list)
-            valid_groups = {k: v for k, v in groups.items() if len(v) > 5}
+            # Divide participants into high/low factor score groups
+            median_factor = merged_data[factor].median()
+            merged_data['factor_group'] = np.where(merged_data[factor] > median_factor, 'High', 'Low')
             
-            if len(valid_groups) >= 2:
-                f_stat, p_val = stats.f_oneway(*valid_groups.values())
-                print(f"One-way ANOVA for {factor} across study sites: F-statistic = {f_stat:.4f}, p-value = {p_val:.4f}")
-                
-                if p_val < 0.05:
-                    print(f"The difference in {factor} between study sites is statistically significant (p < 0.05).")
-                else:
-                    print(f"The difference in {factor} between study sites is not statistically significant (p >= 0.05).")
+            # Compare correlation values between high/low groups
+            plt.figure(figsize=(10, 6))
+            sns.boxplot(x='factor_group', y=self.corr_value_column, data=merged_data)
+            plt.title(f'Correlation Values by {factor} Group (Split at Median)')
+            plt.xlabel(f'{factor} Group')
+            plt.ylabel('Mean Correlation Value')
+            plt.tight_layout()
+            plt.show()
+            
+            # T-test between high/low groups
+            high_group = merged_data[merged_data['factor_group'] == 'High'][self.corr_value_column]
+            low_group = merged_data[merged_data['factor_group'] == 'Low'][self.corr_value_column]
+            
+            t_stat, p_val = stats.ttest_ind(high_group, low_group, equal_var=False)
+            
+            print(f"T-test between high and low {factor} groups: t-statistic = {t_stat:.4f}, p-value = {p_val:.4f}")
+            
+            if p_val < 0.05:
+                print(f"The difference in correlation values between high and low {factor} groups is statistically significant (p < 0.05).")
+            else:
+                print(f"The difference in correlation values between high and low {factor} groups is not statistically significant (p >= 0.05).")
         
         return self
-    
-    def run_complete_eda(self):
-        """
-        Run a complete EDA pipeline on the dataset.
-        """
-        print("Starting Exploratory Data Analysis...")
-        
-        # Basic inspection
-        self.inspect_data()
-        
-        # Basic statistics
-        self.basic_stats()
-        
-        # Missing values
-        self.missing_values_analysis()
-        
-        # Distribution analysis
-        self.distribution_analysis()
-        
-        # Categorical visualization
-        self.categorical_visualization()
-        
-        # Correlation analysis
-        self.correlation_analysis()
-        
-        # Group comparisons
-        self.group_comparisons()
-        
-        # BMI analysis
-        self.bmi_analysis()
-        
-        # Age analysis
-        self.age_analysis()
-        
-        # Parent education analysis
-        self.parent_education_analysis()
-        
-        # Study site analysis
-        self.study_site_analysis()
-        
-        # PCA
-        self.perform_pca()
-        
-        print("\nEDA completed successfully!")
-        return self
-    
-    
