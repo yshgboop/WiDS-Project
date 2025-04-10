@@ -5,6 +5,8 @@ widsdatathon2025-university/
 .vscode/
 test_data.csv
 train_data.csv
+test_data_wide.csv
+train_data_wide.csv
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

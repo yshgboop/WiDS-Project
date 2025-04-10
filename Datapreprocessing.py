@@ -28,8 +28,6 @@ class DataProcessor:
         self.test_folder = test_folder
         self.train_metadata_path = train_metadata_path
         self.test_metadata_path = test_metadata_path
-        self.train_data = None
-        self.test_data = None
     
     def extract_upper_triangular(self, correlation_matrix):
         """
@@ -51,7 +49,7 @@ class DataProcessor:
         upper_triangular_values = correlation_matrix[indices]
         return upper_triangular_values
     
-    def process_folder(self, folder_path):
+    def process_folder_long_format(self, folder_path):
         """
         Process all .tsv files in a folder and return a dataframe of correlation vectors.
         
@@ -99,9 +97,110 @@ class DataProcessor:
         # Create dataframe from all processed files
         return pd.DataFrame(all_rows)
     
-    def prepare_datasets(self):
+    def process_folder_wide_format(self, folder_path):
+        """
+        Process all .tsv files in a folder and return a dataframe of correlation vectors.
+        
+        Parameters:
+        -----------
+        folder_path : str
+            Path to the folder containing .tsv files
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame with patient IDs and correlation features
+        """
+        all_files = glob(os.path.join(folder_path, "*.tsv"))
+        all_rows = []
+        
+        for file_path in all_files:
+            # Extract filename without path
+            filename = os.path.basename(file_path)
+            
+            # Extract patient ID from the filename using the 'sub-' prefix pattern
+            # This regex looks for 'sub-' followed by any characters until the next underscore
+            import re
+            match = re.search(r'sub-([^_]+)', filename)
+            
+            if match:
+                patient_id = match.group(1)  # Extract the captured group (NDARAA306NT2)
+            
+            # Read the correlation matrix from .tsv file
+            corr_matrix = pd.read_csv(file_path, sep='\t', header=None, index_col=None)
+            # print(corr_matrix.shape)
+            
+            # Extract upper triangular elements
+            corr_vector = self.extract_upper_triangular(corr_matrix.values)
+            
+            for i, val in enumerate(corr_vector):
+                # Each row contains participant ID and a single correlation value
+                row = {
+                    "participant_id": patient_id,
+                    "correlation_id": f"corr_{i+1}",
+                    "correlation_value": val
+                }
+                all_rows.append(row)
+        
+        # Create dataframe from all processed files
+        return pd.DataFrame(all_rows)
+    
+    def process_folder_wide_format(self, folder_path):
+        """
+        Process all .tsv files in a folder and return a dataframe in wide format,
+        where each participant has one row with all correlation values as columns.
+        
+        Parameters:
+        -----------
+        folder_path : str
+            Path to the folder containing .tsv files
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame with participant IDs (rows) and correlation features (columns)
+        """
+        all_files = glob(os.path.join(folder_path, "*.tsv"))
+        result_data = []
+        
+        for file_path in all_files:
+            # Extract filename without path
+            filename = os.path.basename(file_path)
+            
+            # Extract patient ID from the filename using the 'sub-' prefix pattern
+            import re
+            match = re.search(r'sub-([^_]+)', filename)
+            
+            if match:
+                patient_id = match.group(1)  # Extract the captured group (NDARAA306NT2)
+            
+            # Read the correlation matrix from .tsv file
+            corr_matrix = pd.read_csv(file_path, sep='\t', header=None, index_col=None)
+            
+            # Extract upper triangular elements
+            corr_vector = self.extract_upper_triangular(corr_matrix.values)
+            
+            # Create a dictionary with participant ID and all correlation values
+            patient_data = {"participant_id": patient_id}
+            
+            # Add correlation features as columns (wide format)
+            for i, val in enumerate(corr_vector):
+                patient_data[f"corr_{i+1}"] = val
+                
+            result_data.append(patient_data)
+        
+        # Create dataframe from all processed files
+        return pd.DataFrame(result_data)
+    
+    
+    def prepare_datasets(self, wide_format=True):
         """
         Process training and test folders and merge with metadata.
+
+        Parameters:
+        -----------
+        wide_format : bool
+            If True, process data in wide format; otherwise, in long format.
         
         Returns:
         --------
@@ -112,18 +211,30 @@ class DataProcessor:
             raise ValueError("Folder paths and metadata paths must be set before preparing datasets")
         
         # Process training and test folders
-        train_df = self.process_folder(self.train_folder)
-        test_df = self.process_folder(self.test_folder)
+        train_df_long = self.process_folder_long_format(self.train_folder)
+        test_df_long = self.process_folder_long_format(self.test_folder)
+        train_df_wide = self.process_folder_wide_format(self.train_folder)
+        test_df_wide = self.process_folder_wide_format(self.test_folder)
         
         # Load metadata
         train_metadata = pd.read_csv(self.train_metadata_path)
         test_metadata = pd.read_csv(self.test_metadata_path)
         
         # Merge with metadata
-        self.train_data = pd.merge(train_df, train_metadata, on="participant_id")
-        self.test_data = pd.merge(test_df, test_metadata, on="participant_id")
+        self.train_data_long = pd.merge(train_df_long, train_metadata, on="participant_id")
+        self.test_data_long = pd.merge(test_df_long, test_metadata, on="participant_id")
+        self.train_data_wide = pd.merge(train_df_wide, train_metadata, on="participant_id")
+        self.test_data_wide = pd.merge(test_df_wide, test_metadata, on="participant_id")
         
+        if wide_format:
+            self.train_data = self.train_data_wide
+            self.test_data = self.test_data_wide
+        else:
+            self.train_data = self.train_data_long
+            self.test_data = self.test_data_long
+            
         return self.train_data, self.test_data
+    
     
     def get_feature_names(self):
         """
@@ -141,20 +252,6 @@ class DataProcessor:
         corr_test = [col for col in self.test_data.columns if col.startswith('corr_')]
         
         return corr_train, corr_test
-    
-    def get_data(self):
-        """
-        Get the prepared training and test datasets.
-        
-        Returns:
-        --------
-        tuple
-            (train_data, test_data) - Prepared DataFrames
-        """
-        if self.train_data is None or self.test_data is None:
-            raise ValueError("Datasets not prepared yet. Call prepare_datasets() first.")
-        
-        return self.train_data, self.test_data
 
 
 
