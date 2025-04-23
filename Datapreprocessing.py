@@ -613,3 +613,397 @@ class ExploratoryDataAnalysis:
                 print(f"The difference in correlation values between high and low {factor} groups is not statistically significant (p >= 0.05).")
         
         return self
+
+
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import KFold, cross_validate
+from sklearn.linear_model import LinearRegression
+import category_encoders as ce
+
+def evaluate_regression_model(X, y, model_type=LinearRegression, 
+                              n_splits=5, random_state=724, 
+                              return_train_score=True):
+    """
+    Evaluate a regression model with cross-validation, automatically handling
+    categorical features with target encoding if needed.
+    
+    Parameters:
+    -----------
+    X : pandas DataFrame
+        Feature dataframe
+    y : pandas Series or array-like
+        Target variable
+    model_type : scikit-learn estimator, default=LinearRegression
+        The regression model to use
+    n_splits : int, default=5
+        Number of folds for cross-validation
+    random_state : int, default=42
+        Random state for reproducibility
+    return_train_score : bool, default=True
+        Whether to return training scores
+        
+    Returns:
+    --------
+    dict : Cross-validation results
+    """
+    # Detect if there are categorical columns
+    categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+    has_categorical = len(categorical_cols) > 0
+    
+    # Create model pipeline based on data types
+    if has_categorical:
+        # With target encoding for categorical data
+        model = Pipeline([
+            ('encoder', ce.TargetEncoder()),
+            ('regressor', model_type())
+        ])
+        print("Using target encoding pipeline")
+    else:
+        # Without encoder for numeric-only data
+        model = model_type()
+        print("Using direct model (no encoding needed)")
+    # 2) fit on the entire X, y
+    model.fit(X, y)
+
+    # 3) compute residuals
+    y_pred    = model.predict(X)
+    residuals = y - y_pred
+
+    # 4) now run the 4 assumption checks:
+    import statsmodels.api as sm
+    from statsmodels.stats.stattools import durbin_watson
+    from statsmodels.stats.diagnostic import het_breuschpagan
+    import matplotlib.pyplot as plt
+
+    # (a) Residuals vs fitted
+    plt.scatter(y_pred, residuals, alpha=0.5)
+    plt.axhline(0, color='grey', linestyle='--')
+    plt.xlabel('Fitted values'); plt.ylabel('Residuals')
+    plt.title('Residuals vs. Fitted')
+    plt.show()
+
+    # (b) QQ‑plot
+    sm.qqplot(residuals, line='45', fit=True)
+    plt.title('Q-Q Plot')
+    plt.show()
+    
+    # Set up cross-validation
+    cv = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    scoring = {'r2': 'r2', 'mse': 'neg_mean_squared_error'}
+    
+    # Perform cross-validation
+    cv_results = cross_validate(model, X, y, cv=cv, scoring=scoring, 
+                                return_train_score=return_train_score)
+    
+    # Print results
+    print("\nCross-Validation Results:")
+    
+    if return_train_score:
+        print(f"Train R² Scores: {cv_results['train_r2']}")
+        print(f"Mean Train R² Score: {np.mean(cv_results['train_r2']):.4f}")
+    
+    print(f"Test R² Scores: {cv_results['test_r2']}")
+    print(f"Mean Test R² Score: {np.mean(cv_results['test_r2']):.4f}")
+    print(f"Test MSE Scores: {-cv_results['test_mse']}") # Negate to get actual MSE
+    print(f"Mean Test MSE: {-np.mean(cv_results['test_mse']):.4f}")
+
+import numpy as np
+from sklearn.linear_model import LassoCV
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.experimental import enable_halving_search_cv  # noqa
+from sklearn.model_selection import HalvingRandomSearchCV, train_test_split
+from xgboost import XGBRegressor
+from xgboost.callback import EarlyStopping
+
+class TrainModel:
+    """
+    A class that handles training, evaluation and running of Lasso regression models.
+    """
+    
+    def __init__(self, random_state=724):
+        """Initialize the LassoModel with a random state for reproducibility."""
+        self.random_state = random_state
+        self.best_model = None
+        self.results = {
+            'best_params': [],
+            'r2_train_scores': [],
+            'r2_test_scores': [],
+            'mse_test_scores': []
+        }
+    
+    def train_lasso(self, X_train, y_train, cv=None, alphas=None, max_iter=10000, tol=0.0001):
+        """
+        Train a Lasso model with cross-validation.
+        
+        Parameters:
+        -----------
+        X_train : DataFrame - Training features
+        y_train : Series - Training target
+        cv : int or cross-validation generator, default=None
+        alphas : array-like, default=None - List of alphas to try
+        max_iter : int, default=10000 - Maximum number of iterations
+        tol : float, default=0.0001 - Tolerance for optimization
+        
+        Returns:
+        --------
+        self - For method chaining
+        """
+        if alphas is None:
+            alphas = np.logspace(-4, 1, 50)
+            
+        # Train LassoCV model
+        self.best_lasso_model = LassoCV(
+            alphas=alphas,
+            cv=cv,
+            max_iter=max_iter,
+            tol=tol,
+            random_state=self.random_state
+        ).fit(X_train, y_train)
+        
+        return self
+    
+    def train_xgboost(
+        self,
+        X_train,
+        y_train,
+        param_grid=None,
+        param_grid_choice='small',      # default to the smaller grid
+        cv_folds=5,
+        random_state=None
+    ):
+        
+        rs = random_state or self.random_state
+
+        # Tighter predefined grid:
+        predefined_grids = {
+            'small': {
+                'max_depth':       [3, 4, 5],
+                'learning_rate':   [0.01, 0.05, 0.1],
+                'subsample':       [0.5, 0.7, 0.8],
+                'colsample_bytree':[0.3, 0.5, 0.7],
+                'gamma':           [0.1, 0.3, 0.5],
+                'reg_alpha':       [0, 0.1, 1],
+                'reg_lambda':      [1, 5, 10],
+                'booster':         ['gbtree']    # drop 'dart'
+            }
+        }
+
+        # choose grid
+        if param_grid is not None:
+            grid = param_grid
+        else:
+            grid = predefined_grids.get(param_grid_choice, predefined_grids['small'])
+
+        # CV splitter
+        kf = KFold(n_splits=cv_folds, shuffle=True, random_state=rs)
+
+        base = XGBRegressor(
+            objective='reg:squarederror',
+            random_state=rs,
+            n_jobs=-1,
+            # push for early stopping on fewer rounds:
+            early_stopping_rounds=20
+        )
+
+        search = HalvingRandomSearchCV(
+            estimator=base,
+            param_distributions=grid,
+            factor=3,
+            resource='n_estimators',
+            max_resources=200,            # lower ceiling on trees
+            cv=kf,
+            scoring='r2',
+            random_state=rs,
+            verbose=1
+        )
+
+        X_main, X_val, y_main, y_val = train_test_split(
+            X_train, y_train, test_size=0.1, random_state=rs
+        )
+        search.fit(
+            X_main, y_main,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
+
+        best = search.best_estimator_
+        best_params = search.best_params_.copy()
+        best_params.setdefault('n_estimators', best.get_params()['n_estimators'])
+
+        self.best_xgb = best
+        self.best_xgb_params = best_params
+
+    
+    def evaluate(self, X_train, X_test, y_train, y_test, store_results=True, evallasso=False, evalxgb = True):
+        """
+        Evaluate model performance on train and test sets.
+        
+        Parameters:
+        -----------
+        X_train, X_test : DataFrames - Training and testing features
+        y_train, y_test : Series - Training and testing targets
+        store_results : bool, default=True - Whether to store results in instance
+        
+        Returns:
+        --------
+        dict - Metrics dictionary
+        """
+        if evalxgb:
+            self.best_model = self.best_xgb
+        else:
+            self.best_model = self.best_lasso_model
+            
+        # Predict on training and test sets
+        best_pred_train = self.best_model.predict(X_train)
+        best_pred_test = self.best_model.predict(X_test)
+        
+        # Calculate performance metrics
+        r2_best_train = r2_score(y_train, best_pred_train)
+        r2_best_test = r2_score(y_test, best_pred_test)
+        mse_best_test = mean_squared_error(y_test, best_pred_test)
+        
+        # Get model parameters
+        if evallasso:
+            print(f"Best alpha value: {self.best_model.alpha_}")
+        else:
+            print(self.best_xgb_params)
+        
+        # Store results if requested
+        if store_results:
+            self.results['r2_train_scores'].append(r2_best_train)
+            self.results['r2_test_scores'].append(r2_best_test)
+            self.results['mse_test_scores'].append(mse_best_test)
+        
+        # Return metrics
+        metrics = {
+            'r2_train': r2_best_train,
+            'r2_test': r2_best_test,
+            'mse_test': mse_best_test
+        }
+        
+        return metrics
+    
+    def run(self, X, y, test_size=0.2, cv=10, trainlasso=False, train_xgb = True):
+        """
+        Run the full training and evaluation process.
+        
+        Parameters:
+        -----------
+        X : DataFrame - Feature dataframe
+        y : Series - Target variable
+        test_size : float, default=0.2 - Proportion of test data
+        cv : int, default=10 - Number of cross-validation folds
+        
+        Returns:
+        --------
+        tuple - (metrics, model)
+        """
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=self.random_state
+        )
+        
+        # Train model
+        if trainlasso:
+            self.train_lasso(X_train, y_train, cv=cv)
+        if train_xgb:
+            self.train_xgboost(X_train, y_train)
+        
+        # Evaluate model
+        if train_xgb:
+            metrics = self.evaluate(X_train, X_test, y_train, y_test)
+        if trainlasso:
+            metrics = self.evaluate(X_train, X_test, y_train, y_test, evallasso=True, evalxgb=False)
+        
+        # Print results
+        print("\n--- Model Evaluation Results ---")
+        if trainlasso:
+            print(f"Lasso - R² Train: {metrics['r2_train']:.4f}, "
+                f"R² Test: {metrics['r2_test']:.4f}, "
+                f"MSE Test: {metrics['mse_test']:.4f}")
+        if train_xgb:
+            print(f"XGBoost - R² Train: {metrics['r2_train']:.4f}, "
+                f"R² Test: {metrics['r2_test']:.4f}, "
+                f"MSE Test: {metrics['mse_test']:.4f}")
+        
+        return metrics, self.best_model
+
+
+import shap
+
+def interpret_xgboost_with_shap(best_model, X, feature_names=None, output_dir=None):
+    """
+    Interpret an XGBoost model using SHAP values.
+    
+    Parameters:
+    -----------
+    best_model : XGBoost model
+        The best model already trained through cross-validation
+    X : DataFrame or array
+        Feature matrix used for generating SHAP values
+    feature_names : list, optional
+        List of feature names. If None and X is not a DataFrame, will use generic names
+    output_dir : str, optional
+        Directory to save plots. If None, plots will only be displayed
+        
+    Returns:
+    --------
+    shap_values : shap.Explanation
+        SHAP values for each prediction
+    """
+    # Set feature names if not provided
+    if feature_names is None:
+        if hasattr(X, 'columns'):
+            feature_names = X.columns.tolist()
+        else:
+            feature_names = [f'feature_{i}' for i in range(X.shape[1])]
+    
+    # Calculate SHAP values
+    print("Calculating SHAP values...")
+    explainer = shap.Explainer(best_model)
+    shap_values = explainer(X)
+    
+    # Create SHAP plots
+    print("Creating SHAP plots...")
+    
+    # Beeswarm summary plot (distribution of impacts)
+    plt.figure(figsize=(12, 10))
+    shap.summary_plot(shap_values, X, show=False)
+    plt.title("Feature Impact Distribution")
+    plt.tight_layout()
+    plt.show()
+
+import numpy as np
+from scipy.stats import pearsonr
+from sklearn.base import BaseEstimator, TransformerMixin
+
+class CPMTransformer(BaseEstimator, TransformerMixin):
+    """
+    For each fold, selects edges whose correlation with y is significant (p < p_thresh),
+    splits them into pos/neg sets, then transforms X to two features:
+      [sum of pos-edges, sum of neg-edges].
+    """
+    def __init__(self, p_thresh=0.01):
+        self.p_thresh = p_thresh
+
+    def fit(self, X, y):
+        # X: (n_samples, n_edges), y: (n_samples,)
+        rs = []
+        ps = []
+        for i in range(X.shape[1]):
+            r, p = pearsonr(X[:, i], y)
+            rs.append(r)
+            ps.append(p)
+        rs = np.array(rs)
+        ps = np.array(ps)
+
+        # store indices of edges to sum
+        self.pos_idx_ = np.where((rs > 0) & (ps < self.p_thresh))[0]
+        self.neg_idx_ = np.where((rs < 0) & (ps < self.p_thresh))[0]
+        return self
+
+    def transform(self, X):
+        # collapse each subject to two network‐strength features
+        pos_sum = X[:, self.pos_idx_].sum(axis=1)
+        neg_sum = X[:, self.neg_idx_].sum(axis=1)
+        return np.vstack([pos_sum, neg_sum]).T
