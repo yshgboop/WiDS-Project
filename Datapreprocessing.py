@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
+from sklearn.linear_model import ElasticNetCV
 
 
 class DataProcessor:
@@ -711,7 +712,7 @@ import numpy as np
 from sklearn.linear_model import LassoCV
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.experimental import enable_halving_search_cv  # noqa
-from sklearn.model_selection import HalvingRandomSearchCV, train_test_split
+from sklearn.model_selection import HalvingRandomSearchCV, train_test_split, GridSearchCV
 from xgboost import XGBRegressor
 from xgboost.callback import EarlyStopping
 
@@ -757,84 +758,240 @@ class TrainModel:
             cv=cv,
             max_iter=max_iter,
             tol=tol,
-            random_state=self.random_state
+            random_state=self.random_state,
+            precompute=False
         ).fit(X_train, y_train)
         
         return self
     
-    def train_xgboost(
+    # def train_xgboost(
+    #     self,
+    #     X_train,
+    #     y_train,
+    #     param_grid=None,
+    #     param_grid_choice='small',      # default to the smaller grid
+    #     cv_folds=5,
+    #     random_state=None
+    # ):
+        
+    #     rs = random_state or self.random_state
+
+    #     # Tighter predefined grid:
+    #     predefined_grids = {
+    #         'small': {
+    #             'max_depth':       [3, 4, 5],
+    #             'learning_rate':   [0.01, 0.05, 0.1],
+    #             'subsample':       [0.5, 0.7, 0.8],
+    #             'colsample_bytree':[0.3, 0.5, 0.7],
+    #             'gamma':           [0.1, 0.3, 0.5],
+    #             'reg_alpha':       [0, 0.1, 1],
+    #             'reg_lambda':      [1, 5, 10],
+    #             'booster':         ['gbtree']
+    #         }
+    #     }
+
+    #     # choose grid
+    #     if param_grid is not None:
+    #         grid = param_grid
+    #     else:
+    #         grid = predefined_grids.get(param_grid_choice, predefined_grids['small'])
+
+    #     # CV splitter
+    #     kf = KFold(n_splits=cv_folds, shuffle=True, random_state=rs)
+
+    #     base = XGBRegressor(
+    #         objective='reg:squarederror',
+    #         random_state=rs,
+    #         n_jobs=-1,
+    #         # push for early stopping on fewer rounds:
+    #         early_stopping_rounds=20
+    #     )
+
+    #     search = HalvingRandomSearchCV(
+    #         estimator=base,
+    #         param_distributions=grid,
+    #         factor=3,
+    #         resource='n_estimators',
+    #         max_resources=200,            # lower ceiling on trees
+    #         cv=kf,
+    #         scoring='r2',
+    #         random_state=rs,
+    #         verbose=1
+    #     )
+
+    #     X_main, X_val, y_main, y_val = train_test_split(
+    #         X_train, y_train, test_size=0.1, random_state=rs
+    #     )
+    #     search.fit(
+    #         X_main, y_main,
+    #         eval_set=[(X_val, y_val)],
+    #         verbose=False
+    #     )
+
+    #     best = search.best_estimator_
+    #     best_params = search.best_params_.copy()
+    #     best_params.setdefault('n_estimators', best.get_params()['n_estimators'])
+
+    #     self.best_xgb = best
+    #     self.best_xgb_params = best_params
+
+    def train_xgboost(self, X_train, y_train, param_grid_choice='small', cv_folds=10, random_state=None):
+        """
+        Train an XGBoost model with hyperparameter tuning.
+        
+        Parameters:
+        -----------
+        X_train : DataFrame
+            Training features
+        y_train : Series
+            Training target
+        param_grid : dict, default=None
+            Custom parameter grid for hyperparameter tuning
+        param_grid_choice : str, default=None
+            Choice of predefined parameter grid ('small', 'large')
+        cv_folds : int, default=5
+            Number of cross-validation folds
+        random_state : int, default=None
+            Random state for the model
+            
+        Returns:
+        --------
+        tuple
+            (best_estimator, best_params)
+        """
+        if random_state is None:
+            random_state = self.random_state
+            
+        # Define predefined parameter grids
+        predefined_grids = {
+            'small': {
+                'n_estimators': [100, 200, 500],
+                'max_depth': [2, 3, 4],
+                'learning_rate': [0.01, 0.03, 0.05],
+                'subsample': [0.6, 0.8, 1.0]
+            },
+            'large': {
+                'n_estimators': [50, 100, 200, 300],
+                'max_depth': [2, 3, 4, 5],
+                'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                'subsample': [0.7, 0.8, 0.9, 1.0],
+                'colsample_bytree': [0.7, 0.8, 0.9],
+                'min_child_weight': [3, 5, 7],
+                'reg_alpha': [0, 0.1, 1],  # L1 regularization
+                'reg_lambda': [1, 1.5, 2]  # L2 regularization
+            }
+        }
+        
+        # Determine which parameter grid to use
+        if param_grid_choice == 'small':
+            # User-provided grid takes precedence
+            selected_param_grid = predefined_grids['small']
+        else:
+            # Default to small grid
+            selected_param_grid = predefined_grids['large']
+            
+        # Define cross-validation strategy
+        kf = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+        
+        # Define base XGBoost model
+        xgb_base = XGBRegressor(
+            random_state=random_state,
+            objective='reg:squarederror',
+            early_stopping_rounds=10,
+            eval_metric='rmse'
+        )
+        
+        # GridSearchCV to find best parameters
+        grid_search = GridSearchCV(
+            estimator=xgb_base,
+            param_grid=selected_param_grid,
+            cv=kf,
+            scoring='r2',
+            n_jobs=-1,
+            verbose=0,
+            return_train_score=True
+        )
+        
+        # Create an evaluation set from training data for early stopping
+        X_train_main, X_eval, y_train_main, y_eval = train_test_split(
+            X_train, y_train, test_size=0.2, random_state=random_state
+        )
+        
+        # Fit with evaluation set
+        grid_search.fit(
+            X_train_main, y_train_main,
+            eval_set=[(X_eval, y_eval)],
+            verbose=False
+        )
+        
+        # Get best parameters and model
+        self.best_params = grid_search.best_params_
+        self.best_xgb = grid_search.best_estimator_
+        
+        return self.best_xgb, self.best_params
+    
+
+    def train_elasticnet(
         self,
         X_train,
         y_train,
-        param_grid=None,
-        param_grid_choice='small',      # default to the smaller grid
-        cv_folds=5,
-        random_state=None
+        cv=10,
+        l1_ratio_list=None,
+        alphas=None,
+        max_iter=10000,
+        tol=0.0001,
+        n_jobs=-1
     ):
-        
-        rs = random_state or self.random_state
+        """
+        Train an ElasticNet model with cross-validation.
 
-        # Tighter predefined grid:
-        predefined_grids = {
-            'small': {
-                'max_depth':       [3, 4, 5],
-                'learning_rate':   [0.01, 0.05, 0.1],
-                'subsample':       [0.5, 0.7, 0.8],
-                'colsample_bytree':[0.3, 0.5, 0.7],
-                'gamma':           [0.1, 0.3, 0.5],
-                'reg_alpha':       [0, 0.1, 1],
-                'reg_lambda':      [1, 5, 10],
-                'booster':         ['gbtree']    # drop 'dart'
-            }
-        }
+        Parameters:
+        -----------
+        X_train : array-like or DataFrame of shape (n_samples, n_features)
+            Training features.
+        y_train : array-like or Series of shape (n_samples,)
+            Training target.
+        cv : int or cross-validation generator, default=None
+            Number of folds or CV splitter.
+        l1_ratio_list : list of floats, default=None
+            List of l1_ratio values to try (1.0 = Lasso, 0.0 = Ridge).
+        alphas : array-like, default=None
+            List of alpha values to try.
+        max_iter : int, default=10000
+            Maximum number of iterations for the solver.
+        tol : float, default=1e-4
+            Tolerance for the optimization.
+        n_jobs : int, default=-1
+            Number of CPUs to use for the cross-validation.
 
-        # choose grid
-        if param_grid is not None:
-            grid = param_grid
-        else:
-            grid = predefined_grids.get(param_grid_choice, predefined_grids['small'])
+        Returns:
+        --------
+        self : object
+            Returns self for method chaining.
+        """
+        # sensible defaults
+        if l1_ratio_list is None:
+            l1_ratio_list = [0.1, 0.5, 0.7, 0.9, 0.95, 0.99, 1.0]
+        if alphas is None:
+            alphas = np.logspace(-4, 1, 50)
 
-        # CV splitter
-        kf = KFold(n_splits=cv_folds, shuffle=True, random_state=rs)
+        self.best_elasticnet_model = ElasticNetCV(
+            l1_ratio=l1_ratio_list,
+            alphas=alphas,
+            cv=cv,
+            max_iter=max_iter,
+            tol=tol,
+            random_state=self.random_state,
+            n_jobs=n_jobs,
+            precompute=False
+        ).fit(X_train, y_train)
 
-        base = XGBRegressor(
-            objective='reg:squarederror',
-            random_state=rs,
-            n_jobs=-1,
-            # push for early stopping on fewer rounds:
-            early_stopping_rounds=20
-        )
+        return self
 
-        search = HalvingRandomSearchCV(
-            estimator=base,
-            param_distributions=grid,
-            factor=3,
-            resource='n_estimators',
-            max_resources=200,            # lower ceiling on trees
-            cv=kf,
-            scoring='r2',
-            random_state=rs,
-            verbose=1
-        )
 
-        X_main, X_val, y_main, y_val = train_test_split(
-            X_train, y_train, test_size=0.1, random_state=rs
-        )
-        search.fit(
-            X_main, y_main,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
 
-        best = search.best_estimator_
-        best_params = search.best_params_.copy()
-        best_params.setdefault('n_estimators', best.get_params()['n_estimators'])
-
-        self.best_xgb = best
-        self.best_xgb_params = best_params
-
-    
-    def evaluate(self, X_train, X_test, y_train, y_test, store_results=True, evallasso=False, evalxgb = True):
+    def evaluate(self, X_train, X_test, y_train, y_test, store_results=True, 
+                 evallasso=False, evalxgb = True, evalelasticnet=False):
         """
         Evaluate model performance on train and test sets.
         
@@ -850,6 +1007,8 @@ class TrainModel:
         """
         if evalxgb:
             self.best_model = self.best_xgb
+        elif evalelasticnet:
+            self.best_model = self.best_elasticnet_model
         else:
             self.best_model = self.best_lasso_model
             
@@ -865,8 +1024,11 @@ class TrainModel:
         # Get model parameters
         if evallasso:
             print(f"Best alpha value: {self.best_model.alpha_}")
+        elif evalelasticnet:
+            print(f"Best alpha value: {self.best_model.alpha_}")
+            print(f"Best l1_ratio value: {self.best_model.l1_ratio_}")
         else:
-            print(self.best_xgb_params)
+            print(self.best_params)
         
         # Store results if requested
         if store_results:
@@ -883,7 +1045,7 @@ class TrainModel:
         
         return metrics
     
-    def run(self, X, y, test_size=0.2, cv=10, trainlasso=False, train_xgb = True):
+    def run(self, X, y, test_size=0.2, cv=10, trainlasso=False, train_xgb = True, train_elastic = False):
         """
         Run the full training and evaluation process.
         
@@ -906,6 +1068,8 @@ class TrainModel:
         # Train model
         if trainlasso:
             self.train_lasso(X_train, y_train, cv=cv)
+        if train_elastic:
+            self.train_elasticnet(X_train, y_train)
         if train_xgb:
             self.train_xgboost(X_train, y_train)
         
@@ -914,6 +1078,8 @@ class TrainModel:
             metrics = self.evaluate(X_train, X_test, y_train, y_test)
         if trainlasso:
             metrics = self.evaluate(X_train, X_test, y_train, y_test, evallasso=True, evalxgb=False)
+        if train_elastic:
+            metrics = self.evaluate(X_train, X_test, y_train, y_test, evalelasticnet=True, evalxgb=False)
         
         # Print results
         print("\n--- Model Evaluation Results ---")
@@ -923,6 +1089,10 @@ class TrainModel:
                 f"MSE Test: {metrics['mse_test']:.4f}")
         if train_xgb:
             print(f"XGBoost - R² Train: {metrics['r2_train']:.4f}, "
+                f"R² Test: {metrics['r2_test']:.4f}, "
+                f"MSE Test: {metrics['mse_test']:.4f}")
+        if train_elastic:
+            print(f"ElasticNet - R² Train: {metrics['r2_train']:.4f}, "
                 f"R² Test: {metrics['r2_test']:.4f}, "
                 f"MSE Test: {metrics['mse_test']:.4f}")
         
