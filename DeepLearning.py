@@ -52,55 +52,6 @@ def make_graph(corr_vec, age, n_nodes, edge_thresh):
         y          = torch.tensor([age], dtype=torch.float)
     )
 
-def objective(trial, model, train_loader, val_loader, num_epochs=50):
-    # 1) Hyperparameter suggestions
-    hidden_dim   = trial.suggest_int("hidden_dim", 16, 128, log=True)
-    lr           = trial.suggest_loguniform("lr", 1e-5, 1e-2)
-    weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
-
-    # 2) Model & optimizer
-    model     = model
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    # 3) Early stopping setup
-    best_val      = float("inf")
-    patience      = 0
-    max_patience  = 5  # stop if no improvement for 5 epochs
-
-    # 4) Training loop with validation & pruning
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        for batch in train_loader:
-            optimizer.zero_grad()
-            pred = model(batch)
-            loss = F.mse_loss(pred, batch.y.view(-1))
-            loss.backward()
-            optimizer.step()
-
-        # Validation
-        model.eval()
-        val_losses = []
-        with torch.no_grad():
-            for batch in val_loader:
-                pred = model(batch)
-                val_losses.append(F.mse_loss(pred, batch.y.view(-1)).item())
-        val_mse = sum(val_losses) / len(val_losses)
-
-        # Report to Optuna for pruning
-        trial.report(val_mse, epoch)
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-
-        # Early stopping logic
-        if val_mse < best_val:
-            best_val = val_mse
-            patience = 0
-        else:
-            patience += 1
-            if patience >= max_patience:
-                break  # stop training early
-
-    return best_val
 
 def vec_to_corrmat(corr_vec, n_nodes=200):
     """
@@ -313,3 +264,53 @@ class AgeMLP2(torch.nn.Module):
         x = F.relu(self.fc2(x))
         x = self.drop2(x)
         return self.fc3(x).squeeze()
+
+def objective(trial, train_loader, val_loader, model_cls, num_epochs=50):
+    # 1) Hyperparameter suggestions
+    hidden_dim   = trial.suggest_int("hidden_dim", 16, 128, log=True)
+    lr           = trial.suggest_loguniform("lr", 1e-5, 1e-2)
+    wd           = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
+
+    # 2) Model & optimizer
+    model     = model_cls(in_dim=256, hidden1 = hidden_dim)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+
+    # 3) Early stopping setup
+    best_val      = float("inf")
+    patience      = 0
+    max_patience  = 5  # stop if no improvement for 5 epochs
+
+    # 4) Training loop with validation & pruning
+    for epoch in range(1, num_epochs + 1):
+        model.train()
+        for xb, yb in train_loader:
+            optimizer.zero_grad()
+            pred = model(xb)
+            loss = F.mse_loss(pred, yb.view(-1))
+            loss.backward()
+            optimizer.step()
+
+        # Validation
+        model.eval()
+        val_losses = []
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                pred = model(xb)
+                val_losses.append(F.mse_loss(pred, yb.view(-1)).item())
+        val_mse = sum(val_losses) / len(val_losses)
+
+        # Report to Optuna for pruning
+        trial.report(val_mse, epoch)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
+
+        # Early stopping logic
+        if val_mse < best_val:
+            best_val = val_mse
+            patience = 0
+        else:
+            patience += 1
+            if patience >= max_patience:
+                break  # stop training early
+
+    return best_val
