@@ -77,18 +77,19 @@ This repository contains the code for participation in the WiDS Datathon 2025 Un
         * Load the processed wide-format data.
         * Perform feature selection/dimensionality reduction (e.g., PCA).
         * Train and evaluate Linear Regression, Lasso, XGBoost, and ElasticNet models using the `TrainModel` class.
-4.  **Modeling (Deep Learning)**:
-    * Adapt and run code from `DeepLearning.py`. This might involve:
-        * Using `make_graph` to create graph datasets from correlation vectors.
-        * Training one of the GNN models (`AgeGCN`, `AgeGAT`, `AgeSAGE`).
-        * Alternatively, training the CAE (`CorrCAE`) for feature extraction, possibly followed by an MLP (`AgeMLP`, `AgeMLP2`).
-        * Using the `objective` function with Optuna for hyperparameter optimization if desired.
      * Run `679 FP Modeling.Rmd` (R Markdown):
         * Handles missing data (imputation for BMI/demographics).
         * Performs feature engineering with linear PCA and Nyström-PCA for dimensionality reduction.
         * Trains and validates models (Linear Regression, Elastic Net, Lasso, Ridge, Random Forest, XGBoost) with validation splits.
         * Outputs performance metrics (RMSE/R²) and feature importance plots (SHAP, VIP).
         * Generates final test predictions (`test_age_predictions.csv`) using the best model (Lasso + linear PCA).
+4.  **Modeling (Deep Learning)**:
+    * Adapt and run code from `DeepLearning.py`. This might involve:
+        * Using `make_graph` to create graph datasets from correlation vectors.
+        * Training one of the GNN models (`AgeGCN`, `AgeGAT`, `AgeSAGE`).
+        * Alternatively, training the CAE (`CorrCAE`) for feature extraction, possibly followed by an MLP (`AgeMLP`, `AgeMLP2`).
+        * Using the `objective` function with Optuna for hyperparameter optimization if desired.
+
 
 ## 📊 Models Implemented
 
