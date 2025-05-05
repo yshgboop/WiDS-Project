@@ -3,10 +3,7 @@ test_tsv1/
 train_tsv1/
 widsdatathon2025-university/
 .vscode/
-test_data.csv
-train_data.csv
-test_data_wide.csv
-train_data_wide.csv
+*.csv
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -181,3 +178,4 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+.Rproj.user

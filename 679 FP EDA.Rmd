@@ -52,8 +52,8 @@ if(anyNA(complete_test)) {
   cat("Success: No missing values in the cleaned dataset.\n")
 }
 
-write.csv(complete_train, "train_wide_complete.csv")
-write.csv(complete_test, "test_wide_complete.csv")
+# write.csv(complete_train, "train_wide_complete.csv")
+# write.csv(complete_test, "test_wide_complete.csv")
 ```
 
 ## (start run here) Complete Cases CSV Reading

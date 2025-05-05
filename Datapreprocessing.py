@@ -7,6 +7,7 @@ import seaborn as sns
 from scipy import stats
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from sklearn.linear_model import ElasticNetCV
+import statsmodels.api as sm
 
 
 class DataProcessor:
@@ -1024,6 +1025,38 @@ class TrainModel:
         # Get model parameters
         if evallasso:
             print(f"Best alpha value: {self.best_model.alpha_}")
+            print("Generating diagnostic plots for Lasso...")
+            # Ensure self.best_model is indeed the Lasso model here
+            if not type(self.best_model).__name__.startswith('Lasso'):
+                 print("Warning: evallasso=True, but the evaluated model is not Lasso. Skipping plots.")
+            else:
+                 # Calculate residuals for the test set
+                 residuals_test = y_test - best_pred_test
+    
+                 # Create a figure with 1 row and 2 columns of subplots
+                 fig, axes = plt.subplots(1, 2, figsize=(12, 5)) # Adjust figsize as needed
+
+                 # 1. Residuals vs Fitted Plot (on the first subplot: axes[0])
+                 axes[0].scatter(best_pred_test, residuals_test, alpha=0.5)
+                 axes[0].axhline(y=0, color='red', linestyle='--')
+                 axes[0].set_xlabel("Fitted values (Predicted Age)")
+                 axes[0].set_ylabel("Residuals (Actual - Predicted Age)")
+                 axes[0].set_title("Residuals vs. Fitted Values (Test Set)")
+                 axes[0].grid(True)
+
+                 # 2. Q-Q Plot (on the second subplot: axes[1])
+                 sm.qqplot(residuals_test, line='s', fit=True, ax=axes[1]) # Pass the axes object!
+                 axes[1].set_title("Normal Q-Q Plot of Residuals (Test Set)")
+                 axes[1].grid(True)
+                 
+                 # Add a main title to the whole figure (optional)
+                 fig.suptitle("Lasso Model Diagnostics (Test Set)", fontsize=14)
+                 
+                 # Adjust layout to prevent overlap
+                 plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust rect to make space for suptitle
+
+                 # Show the figure with both plots
+                 plt.show()
         elif evalelasticnet:
             print(f"Best alpha value: {self.best_model.alpha_}")
             print(f"Best l1_ratio value: {self.best_model.l1_ratio_}")
