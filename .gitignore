@@ -8,7 +8,7 @@ widsdatathon2025-university/
 __pycache__/
 *.py[cod]
 *$py.class
-
+.Rhistory
 # C extensions
 *.so
 
